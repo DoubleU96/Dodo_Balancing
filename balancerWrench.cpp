@@ -110,27 +110,36 @@ void scroll(GLFWwindow* window, double xoffset, double yoffset)
 }
 
 // controller callback funtcion
-void controllerCallback(const mjModel* m, mjData* d) // + (, mjtNum* jacp, mjtNum* jacr) ?
+void controllerCallback(const mjModel* m, mjData* d)
 {
     using namespace Eigen;
     using namespace std;
 
-//--------------------------------------------------------------------------------------------
+    //Direct Control of the Actuators for Illustration
+    int iterations = 0; //Q: Doesn't this mean that each timestep this inner for loop is called?
+    if(iterations<500){
 
-    //Might be Usefull
-//    m->stat.meanmass = m_b; //mean mass of the body
-//    m_b2 = mj_getTotalmass(m); // which one is right?
 
-//    m->body_ipos; //local position of center of mass         (nbody x 3)
+        //Direct Control of the Actuators for Illustration
+        for(int i=0;i < m->nu; i++) {
+            d->qfrc_applied[i+6]= 100.0*(m->qpos0[i+7] - d->qpos[i+7]) - 1.0*d->qvel[i+6] + d->qfrc_bias[i+6];
+        }
 
-//    d->crb; // com-based composite inertia and mass     (nbody x 10)
-//    d->cvel; // com-based velocity [3D rot; 3D tran]     (nbody x 6)
-//    mj_jac(m, d, jacp, jacr, point[3], m->nv); // calculating com jacobian
+        iterations++;
 
-//---------------------------------------------------------------------------------------------
-    //Precalculations
+    }
 
-    //  COM Jacobian
+    else{
+        //Might be Usefull
+
+    //    d->crb; // com-based composite inertia and mass     (nbody x 10)
+    //    d->cvel; // com-based velocity [3D rot; 3D tran]     (nbody x 6)
+    //    mj_jac(m, d, jacp, jacr, point[3], m->nv); // calculating com jacobian
+
+    //---------------------------------------------------------------------------------------------
+        //Precalculations
+
+        //  COM Jacobian
             mjtNum mi, m_tot;
             mjtNum *jacp_i, *jacr_i;
             mjtNum *jacp_COM = new mjtNum[3 * (m->nv)]{}, *jacr_COM = new mjtNum[3 * (m->nv)]{};
@@ -146,36 +155,70 @@ void controllerCallback(const mjModel* m, mjData* d) // + (, mjtNum* jacp, mjtNu
                 mju_addToScl(jacp_COM, jacp_i, mi, 3 * (m->nv)); // What is the equivalent to this using Eigen?
                 mju_addToScl(jacr_COM, jacr_i, mi, 3 * (m->nv));
             }
-    //---
+        //---
 
 
-    //Readout
-//    for (int i = 0; i < m->nv; i++){
-//    cout << i << ": " << d->qvel[i] << "\t"; //how can we check if the values are correct? Should we load another XML File?
-//    }
-//    cout << endl << endl;
-    //------
+        //Readout
+    //    for (int i = 0; i < m->nv; i++){
+    //    cout << i << ": " << d->qvel[i] << "\t";
+    //    }
+    //    cout << endl << endl;
+        //------
+
+            double mass_tot = mj_getTotalmass(m);
+        //---------------------------
+        VectorXd r_com = VectorXd::Zero(3);                 //CoM position of the total of all bodies in world frame
+        VectorXd r_com_d = VectorXd::Zero(3);           //desired CoM position of the total of all bodies in world frame
+        Vector3d g( 0, 0, 9.81);                            //gravity in world frame
+        VectorXd v_com = VectorXd::Zero(3);                 //verlocity of CoM in world frame
+        VectorXd f_com = VectorXd::Zero(3);                 //overall force to be acting on CoM for Balancing
+
+        MatrixXd K_t = Matrix<double, 3, 3>::Identity();
+        MatrixXd D_t = Matrix<double, 3, 3>::Identity();
+
+        VectorXd qpos = VectorXd::Zero(m->nq);
+        qpos = Map<VectorXd> (d->qpos,m->nq);
+
+        //  Mapping Jacobi_CoM
+        MatrixXd Jacp_COM = MatrixXd::Zero(3, m->nv);
+        Jacp_COM = Map<MatrixXd> (jacp_COM, 3, m->nv);
+
+        MatrixXd Jacr_COM = MatrixXd::Zero(3, m->nv);
+        Jacr_COM = Map<MatrixXd> (jacr_COM, 3, m->nv);
+
+        MatrixXd J_COM = MatrixXd::Zero(6, m->nv);
+        J_COM << Jacp_COM,
+                 Jacr_COM;
+        //--
+
+        mjMARKSTACK;
+        //mjtNum* J_buffer = mj_stackAlloc(d, 3*m->nv);
+        //mjtNum* temp = mj_stackAlloc(d, 100);
 
 
-    //Mappings
-    VectorXd qpos = VectorXd::Zero(m->nq);
-    qpos = Map<VectorXd> (d->qpos,m->nq);
+        //position of CoM
+        for(int i=1;i<m->nv;i++){
+            r_com += Map<VectorXd>(d->xipos + 3*i, 3) * m->body_mass[i];
+            v_com += Map<VectorXd>(d->cvel + 6*i, 3) * m->body_mass[i];
+        }
 
-    //  Mapping Jacobi_COM
-    Matrix<float, Dynamic, Dynamic> Jacp_COM (3, m->nv);
-    Map<MatrixXf> Jacp_COM (jacp_COM);
+        v_com /= mass_tot;
+        r_com /= mass_tot;
 
-    Matrix<float, Dynamic, Dynamic> Jacr_COM (3, m->nv);
-    Map<MatrixXf> Jacr_COM (jacr_COM);
+//        r_com_d = (r_com_d + r_com)/2;
 
-    //--
 
-    //Direct Control of the Actuators for Illustration
-//    for(int i=0;i < m->nu; i++) {
-//        d->qfrc_applied[i+6]= 100.0*(m->qpos0[i+7] - d->qpos[i+7]) - 1.0*d->qvel[i+6] + d->qfrc_bias[i+6];
-//    }
+
+        //Calculation of f_com according to a PD-Controller
+        f_com = mass_tot * g + K_t * (r_com_d - r_com) + D_t * v_com;
+
+
+        mjFREESTACK;
+    }
 
 }
+
+
 
 
 
