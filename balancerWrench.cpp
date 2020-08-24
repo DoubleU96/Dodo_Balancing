@@ -20,7 +20,9 @@
 #include <eigen3/Eigen/Core>
 #include <eigen3/Eigen/Dense>
 #include <vector>
-#include <array>
+
+#include "OsqpEigen/OsqpEigen.h"
+
 
 // MuJoCo data structures
 mjModel* m = NULL;                  // MuJoCo model
@@ -40,6 +42,9 @@ double lasty = 0;
 bool firstLoop = true;
 bool pushNow = true;
 
+
+//Steps for switching tto balancer mode
+int steps =0;
 
 // keyboard callback
 void keyboard(GLFWwindow* window, int key, int scancode, int act, int mods)
@@ -112,115 +117,316 @@ void scroll(GLFWwindow* window, double xoffset, double yoffset)
 // controller callback funtcion
 void controllerCallback(const mjModel* m, mjData* d)
 {
+
     using namespace Eigen;
     using namespace std;
 
-    //Direct Control of the Actuators for Illustration
-    int iterations = 0; //Q: Doesn't this mean that each timestep this inner for loop is called?
-    if(iterations<500){
+    //We only use that in order to place the Dodo in the first frame steps stabilized on the ground
 
-
-        //Direct Control of the Actuators for Illustration
+    if(steps < 500){
         for(int i=0;i < m->nu; i++) {
-            d->qfrc_applied[i+6]= 100.0*(m->qpos0[i+7] - d->qpos[i+7]) - 1.0*d->qvel[i+6] + d->qfrc_bias[i+6];
+                d->qfrc_applied[i+6]= 100.0*(m->qpos0[i+7] - d->qpos[i+7]) - 1.0*d->qvel[i+6] + d->qfrc_bias[i+6];
+
+        }
+    steps++;
+    cout<<steps<<endl;
+    }
+
+    else {
+
+        //Initialization
+        //Constants
+        const int number_contact_points = 2;
+        const int contact_point_1 = mj_name2id(m,mjOBJ_BODY,"right_foot");
+        const int contact_point_2 = mj_name2id(m,mjOBJ_BODY,"left_foot");
+        const int torso_id = mj_name2id(m,mjOBJ_BODY,"torso");
+
+
+        //1st step PD like controller
+
+        const double gravity = 9.81;
+        Vector3d gravity_vector(0,0, gravity);
+        MatrixXd K_t = MatrixXd::Zero(3, 3);
+        K_t << 80.0, 0, 0,
+             0, 80.0, 0,
+            0, 0, 10000.0;
+        MatrixXd D_t = MatrixXd::Zero(3, 3);
+        D_t << 5.0, 0, 0,
+             0, 5.0, 0,
+            0, 0, 400.0;
+        MatrixXd K_r = MatrixXd::Zero(3, 3);
+        K_r = 100.0f * MatrixXd::Identity(3,3);
+        MatrixXd D_r = MatrixXd::Zero(3, 3);
+        D_r = 1.0f * MatrixXd::Identity(3,3);
+
+        VectorXd x_COM_desired = VectorXd::Zero(3); //Desired COM position
+        VectorXd x_COM = VectorXd::Zero(3); //Whole body COM position
+
+        VectorXd v_COM = VectorXd::Zero(3); //Whole body COM velocity
+
+        Quaterniond Q_b; //the current orientation of frame b
+        Quaterniond Q_b_desired; //the desired orientation of frame b
+
+        VectorXd w_b = VectorXd::Zero(3);
+        VectorXd w_b_desired = VectorXd::Zero(3); //Is initialized as zero and stays zero as the angular velocity should be 0 for the quasi static case.
+        VectorXd e_or = VectorXd::Zero(3);
+        VectorXd edot_or = VectorXd::Zero(3);
+        MatrixXd R_b = MatrixXd::Zero(3,3);
+
+        VectorXd f_COM = VectorXd::Zero(3); //ground applied force
+        VectorXd m_COM = VectorXd::Zero(3); //ground applied moment
+
+        VectorXd F_COM = VectorXd::Zero(6); //ground applied wrench
+
+        //Auxiliary variables for final equation 1
+        VectorXd x_COMi = VectorXd::Zero(3); // COM position of body i
+        VectorXd x_COMi_des = VectorXd::Zero(3); // COM position of body i
+        VectorXd dq = VectorXd::Zero(m->nv); //velocity of the degrees of freedom
+
+
+        //2nd step for force distribution with F_k= G_PI *F_COM
+        MatrixXd G = MatrixXd::Zero(6, number_contact_points*6); //Contact map
+        MatrixXd G_PI = MatrixXd::Zero(number_contact_points*6, 6); //Pseudo inversecontact map
+
+        VectorXd F_k = VectorXd::Zero(12); //contact wrench //6
+
+        //Auxiliary variables for final equation 2
+        VectorXd x_k = VectorXd::Zero(3); //Vector from W to the contact point k
+        VectorXd x_COM_k = VectorXd::Zero(3); //Vector from COM to the contact point k
+        MatrixXd x_COM_k_skew = MatrixXd::Zero(3, 3);
+        MatrixXd G_T= MatrixXd::Zero(3, 3);
+
+
+        //3rd step wit tau=J_T*F_k
+
+        MatrixXd J_b_COM = MatrixXd::Zero(3, m->nv); //Base to COM Jacobian in W frame with shape 3x number of degrees of freedom
+        MatrixXd J_COM_K = MatrixXd::Zero(number_contact_points*6, m->nv); //Final Com to endeffector Jacobian in W frame with shape 6x number of degrees of freedom
+        MatrixXd J_COM_K_T = MatrixXd::Zero(m->nv, number_contact_points*6); //Transpose final Jacobian
+
+        VectorXd tau = VectorXd::Zero(m->nv); //contact wrench
+
+        //Auxiliary variables for final equation 3
+        MatrixXd J_COM = MatrixXd::Zero(3, m->nv); //COM Jacobian of all bodies with shape 3x number of degrees of freedom
+        MatrixXd J_COMi = MatrixXd::Zero(3, m->nv); //COM Jacobian of body i with shape 3x number of degrees of freedom
+        MatrixXd J_b = MatrixXd::Zero(3, m->nv); //Base Jacobian with shape 3x number of degrees of freedom
+
+        MatrixXd J_bk_trans = MatrixXd::Zero(3, m->nv); //Translational part of Com to endeffector k Jacobian with shape 3x number of degrees of freedom
+        MatrixXd J_bk_rot = MatrixXd::Zero(3, m->nv); //Rotational part of Com to endeffector k Jacobian with shape 3x number of degrees of freedom
+        MatrixXd J_COM_k = MatrixXd::Zero(6, m->nv); //Com to endeffector k Jacobian in W frame with shape 6x number of degrees of freedom
+
+
+        //Implementation
+
+        //Calculating the desired variables
+
+        //Desired COM position
+        if(steps == 500){
+            for (int i=1; i< m->nbody; i++) {//We start at i=1 since i=0 is the world frame
+                //Calculate COM position
+                x_COMi_des = Map<VectorXd> (d->subtree_com+3*i, 3);
+                x_COM_desired += (m->body_mass[i] * x_COMi_des);
+            }
+            x_COM_desired /= mj_getTotalmass(m);
+
+            cout<<x_COM_desired<<endl;
+
+            //Desired base orientation
+            Q_b_desired.w() = d->qpos[3];
+            Q_b_desired.x() = d->qpos[4];
+            Q_b_desired.y() = d->qpos[5];
+            Q_b_desired.z() = d->qpos[6];
+
+            steps++;
+            cout<<steps<<endl;
         }
 
-        iterations++;
+        steps++;
+        cout<<steps<<endl;
+
+        mjMARKSTACK
+        //Basics and variables for Equation 1
+
+            //Computing the COM Jacobian and the COM
+            mjtNum* J_COMi_temp = mj_stackAlloc(d, 3*m->nv);
+
+            for (int i=1; i< m->nbody; i++) {//We start at i=1 since i=0 is the world frame
+                //Calculate COM position
+                x_COMi = Map<VectorXd> (d->subtree_com+3*i, 3);
+                x_COM += (m->body_mass[i] * x_COMi);
+
+                //Calculate J_COMi
+                mj_jacBody(m, d, J_COMi_temp, NULL, i);
+                J_COMi = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(J_COMi_temp, 3, m->nv);
+                J_COM += (m->body_mass[i] * J_COMi);
+            }
+
+            J_COM /= mj_getTotalmass(m);
+            x_COM /= mj_getTotalmass(m);
+
+            //Compute the COM veloxity v_COM
+
+            dq = Map<VectorXd>(d->qvel,m->nv);
+            v_COM = J_COM *dq;
+
+            //Compute Quaternions for current base orientation
+            Q_b.w() = d->qpos[3];
+            Q_b.x() = d->qpos[4];
+            Q_b.y() = d->qpos[5];
+            Q_b.z() = d->qpos[6];
+            Q_b.normalize();
+
+            //Compute the current base velocity
+            w_b = Map<VectorXd>(d->qvel+3, 3);
+
+        //Variables for Equation 2
+            //Contact point 1
+            x_k = Map<VectorXd>(d->xpos+contact_point_1*3, 3);
+            x_COM_k = x_k - x_COM;
+
+            G.block(0,0,6,6) = eigenUtils::adjointTransformation(x_COM_k, MatrixXd::Identity(3,3));
+
+            //x_COM_k_skew = eigenUtils::skewSymmetric(x_COM_k);
+            //G.block(0,0,6,6) = MatrixXd::Identity(6,6);
+            //G.block(3,0,3,3) = x_COM_k_skew;
+
+            //Contact point 2
+            x_k = Map<VectorXd>(d->xpos+contact_point_2*3, 3);
+            x_COM_k = x_k - x_COM;
+
+            G.block(0,6,6,6) = eigenUtils::adjointTransformation(x_COM_k, MatrixXd::Identity(3,3));
+            //x_COM_k_skew = eigenUtils::skewSymmetric(x_COM_k);
+            //G.block(0,6,6,6) = MatrixXd::Identity(6,6);
+            //G.block(3,6,3,3) = x_COM_k_skew;
+
+        //Variables for Equation 3
+            // Compute the Jacobian J_b_COM from the base in "torso" b to COM.
+            mjtNum* J_b_temp = mj_stackAlloc(d, 3*m->nv);
+            mj_jacBody(m, d, J_b_temp, NULL, torso_id );
+            J_b = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(J_b_temp, 3, m->nv);
+            J_b_COM = J_COM - J_b;
+
+            mjtNum* J_bk_trans_temp = mj_stackAlloc(d, 3*m->nv);
+            mjtNum* J_bk_rot_temp = mj_stackAlloc(d, 3*m->nv);
+
+            //Contact point 1
+            mj_jacBody(m, d, J_bk_trans_temp, J_bk_rot_temp, contact_point_1);
+            J_bk_trans = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(J_bk_trans_temp, 3, m->nv);
+            J_bk_rot = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(J_bk_rot_temp, 3, m->nv);
+
+            J_COM_k.block(0,0,3, m->nv) = J_bk_trans - J_b_COM;
+            J_COM_k.block(3,0,3, m->nv) = J_bk_rot;
+            J_COM_K.block(0,0,6, m->nv) = J_COM_k;
+
+            //Contact point _2
+            mj_jacBody(m, d, J_bk_trans_temp, J_bk_rot_temp, contact_point_2);
+            J_bk_trans = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(J_bk_trans_temp, 3, m->nv);
+            J_bk_rot = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(J_bk_rot_temp, 3, m->nv);
+
+            J_COM_k.block(0,0,3, m->nv) = J_bk_trans - J_b_COM;
+            J_COM_k.block(3,0,3, m->nv) = J_bk_rot;
+            J_COM_K.block(6,0,6, m->nv) = J_COM_k;
+
+        mjFREESTACK
+
+
+        //Final calculations
+
+        //First step
+        f_COM = mj_getTotalmass(m) * gravity_vector - K_t* (x_COM - x_COM_desired) - D_t * v_COM;
+        eigenUtils::virtualSpringPD(m_COM, e_or, edot_or, Q_b, Q_b_desired, w_b,  w_b_desired, K_r, D_r);
+
+        F_COM.head(3) = f_COM;
+        F_COM.tail(3) = m_COM;
+
+        //Second step
+        //Pseudo inverse
+//        F_k = G.bdcSvd(ComputeThinU | ComputeThinV).solve(F_COM);
+
+
+        //--------------------------------
+
+        //solving F_k with osqp-eigen QP optimization
+
+
+        MatrixXd Q = MatrixXd::Zero(6,6);
+        Q = 4.0f * MatrixXd::Identity(6,6);
+
+        MatrixXd P = MatrixXd::Zero(12,12);
+        P = (G.transpose())*Q*G;
+        SparseMatrix<double> P_S(12,12);
+        P_S = P.sparseView();
+
+        VectorXd q = VectorXd::Zero(12);
+        q=2*(F_COM.transpose())*Q*G;
+
+        VectorXd u = VectorXd::Zero(4);
+        Vector4d l(-1000,-1000,-1000,-1000);
+        cout << l;
+
+        SparseMatrix<float> A(4,12);
+        A.insert(0,2) = -1;
+        A.insert(1,8) = -1;
+        A.insert(2,0) = 1;
+        A.insert(2,1) = 1;
+        A.insert(2,2) = -0.1;
+        A.insert(3,6) = 1;
+        A.insert(3,7) = 1;
+        A.insert(3,8) = -0.1;
+
+        OsqpEigen::Solver solver;
+
+        solver.data()->setNumberOfVariables(12);
+        solver.data()->setNumberOfConstraints(4);
+        solver.data()->setHessianMatrix(P_S);
+        solver.data()->setGradient(q);
+        solver.data()->setLinearConstraintsMatrix(A);
+        solver.data()->setUpperBound(u);
+        solver.data()->setLowerBound(l);
+
+        solver.initSolver();
+
+        solver.solve();
+
+        F_k = solver.getSolution();
+
+
+        //----------------------------
+
+
+        // GG_T = G* G.transpose();
+
+        //G_PI = G.transpose()* GG_T.inverse();
+        //F_k= G_PI * F_COM;
+
+        //Third step
+        J_COM_K_T= J_COM_K.transpose();
+        tau = J_COM_K_T * F_k;
+
+        for(int i=0;i < m->nu; i++) {
+            d->qfrc_applied[i+6] = tau(i+6);
+            }
+
+        //Applying forces in x and y direction and a moment around x
+
+        cout << "###########################################################################Current Step:" << steps<< endl;
+
+        if (steps > 1500) d->qfrc_applied[1]=5000;
+
+        if (steps > 2500) d->qfrc_applied[1]=0.0;
+
+        if (steps > 2000) d->qfrc_applied[4]=36.0;
+
+        if (steps > 2200) d->qfrc_applied[4]=0.0;
+
+        if (steps > 2500) d->qfrc_applied[2]=193.0;
+
+        if (steps > 2700) d->qfrc_applied[2]=0;
+
 
     }
 
-    else{
-        //Might be Usefull
-
-    //    d->crb; // com-based composite inertia and mass     (nbody x 10)
-    //    d->cvel; // com-based velocity [3D rot; 3D tran]     (nbody x 6)
-    //    mj_jac(m, d, jacp, jacr, point[3], m->nv); // calculating com jacobian
-
-    //---------------------------------------------------------------------------------------------
-        //Precalculations
-
-        //  COM Jacobian
-            mjtNum mi, m_tot;
-            mjtNum *jacp_i, *jacr_i;
-            mjtNum *jacp_COM = new mjtNum[3 * (m->nv)]{}, *jacr_COM = new mjtNum[3 * (m->nv)]{};
-
-            for (int i = 1; i< m->nbody;i++){
-                m_tot += m->body_mass[i];
-            }
-
-            for (int i = 1; i < m->nbody; i++) {    // exclude i=0 the world body
-                mi = m->body_mass[i];
-                mi = mi / m_tot;
-                mj_jacBodyCom(m, d, jacp_i, jacr_i, i);
-                mju_addToScl(jacp_COM, jacp_i, mi, 3 * (m->nv)); // What is the equivalent to this using Eigen?
-                mju_addToScl(jacr_COM, jacr_i, mi, 3 * (m->nv));
-            }
-        //---
-
-
-        //Readout
-    //    for (int i = 0; i < m->nv; i++){
-    //    cout << i << ": " << d->qvel[i] << "\t";
-    //    }
-    //    cout << endl << endl;
-        //------
-
-            double mass_tot = mj_getTotalmass(m);
-        //---------------------------
-        VectorXd r_com = VectorXd::Zero(3);                 //CoM position of the total of all bodies in world frame
-        VectorXd r_com_d = VectorXd::Zero(3);           //desired CoM position of the total of all bodies in world frame
-        Vector3d g( 0, 0, 9.81);                            //gravity in world frame
-        VectorXd v_com = VectorXd::Zero(3);                 //verlocity of CoM in world frame
-        VectorXd f_com = VectorXd::Zero(3);                 //overall force to be acting on CoM for Balancing
-
-        MatrixXd K_t = Matrix<double, 3, 3>::Identity();
-        MatrixXd D_t = Matrix<double, 3, 3>::Identity();
-
-        VectorXd qpos = VectorXd::Zero(m->nq);
-        qpos = Map<VectorXd> (d->qpos,m->nq);
-
-        //  Mapping Jacobi_CoM
-        MatrixXd Jacp_COM = MatrixXd::Zero(3, m->nv);
-        Jacp_COM = Map<MatrixXd> (jacp_COM, 3, m->nv);
-
-        MatrixXd Jacr_COM = MatrixXd::Zero(3, m->nv);
-        Jacr_COM = Map<MatrixXd> (jacr_COM, 3, m->nv);
-
-        MatrixXd J_COM = MatrixXd::Zero(6, m->nv);
-        J_COM << Jacp_COM,
-                 Jacr_COM;
-        //--
-
-        mjMARKSTACK;
-        //mjtNum* J_buffer = mj_stackAlloc(d, 3*m->nv);
-        //mjtNum* temp = mj_stackAlloc(d, 100);
-
-
-        //position of CoM
-        for(int i=1;i<m->nv;i++){
-            r_com += Map<VectorXd>(d->xipos + 3*i, 3) * m->body_mass[i];
-            v_com += Map<VectorXd>(d->cvel + 6*i, 3) * m->body_mass[i];
-        }
-
-        v_com /= mass_tot;
-        r_com /= mass_tot;
-
-//        r_com_d = (r_com_d + r_com)/2;
-
-
-
-        //Calculation of f_com according to a PD-Controller
-        f_com = mass_tot * g + K_t * (r_com_d - r_com) + D_t * v_com;
-
-
-        mjFREESTACK;
-    }
 
 }
-
-
-
-
 
 
 // main function
@@ -302,6 +508,7 @@ int main(int argc, const char** argv)
     mjcb_control = controllerCallback;
 
 
+
     // run main loop, target real-time simulation and 60 fps rendering
     while( !glfwWindowShouldClose(window) )
     {
@@ -344,4 +551,3 @@ int main(int argc, const char** argv)
 
     return 1;
 }
-
