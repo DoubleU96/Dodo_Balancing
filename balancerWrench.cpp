@@ -20,6 +20,7 @@
 #include <eigen3/Eigen/Core>
 #include <eigen3/Eigen/Dense>
 #include <vector>
+#include <fstream>
 
 #include "OsqpEigen/OsqpEigen.h"
 
@@ -31,6 +32,8 @@ mjvCamera cam;                      // abstract camera
 mjvOption opt;                      // visualization options
 mjvScene scn;                       // abstract scene
 mjrContext con;                     // custom GPU context
+
+//Eigen::MatrixXd f_COM_M = Eigen::MatrixXd::Zero(6,1600); //Matrix  (n x nb_steps) of Vector to be saved as CSV
 
 // mouse interaction
 bool button_left = false;
@@ -45,6 +48,18 @@ bool pushNow = true;
 
 //Steps for switching tto balancer mode
 int steps =0;
+
+// define the format you want, you only need one instance of this...
+const static Eigen::IOFormat CSVFormat(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", "\n");
+
+//Write A Vector to a CSV File with each colums eq. to step
+void writeToCSVfile(std::string name, Eigen::MatrixXd matrix)
+{
+    using namespace std;
+    ofstream file(name.c_str());
+    file << matrix.format(CSVFormat);
+}
+
 
 // keyboard callback
 void keyboard(GLFWwindow* window, int key, int scancode, int act, int mods)
@@ -241,7 +256,7 @@ void controllerCallback(const mjModel* m, mjData* d)
         }
 
         steps++;
-        cout<<steps<<endl;
+        cout << "###########################################################################Current Step:"<<steps<<endl;
 
         mjMARKSTACK
         //Basics and variables for Equation 1
@@ -262,6 +277,9 @@ void controllerCallback(const mjModel* m, mjData* d)
 
             J_COM /= mj_getTotalmass(m);
             x_COM /= mj_getTotalmass(m);
+//            x_COM_M.block(0,steps-501,3,1)= x_COM;
+//            x_COM_err_M.block(0,steps-501,3,1) = x_COM - x_COM_desired;
+
 
             //Compute the COM veloxity v_COM
 
@@ -333,6 +351,8 @@ void controllerCallback(const mjModel* m, mjData* d)
 
         //First step
         f_COM = mj_getTotalmass(m) * gravity_vector - K_t* (x_COM - x_COM_desired) - D_t * v_COM;
+//        f_COM_M.block(0,steps-501,3,1)= f_COM;
+
         eigenUtils::virtualSpringPD(m_COM, e_or, edot_or, Q_b, Q_b_desired, w_b,  w_b_desired, K_r, D_r);
 
         F_COM.head(3) = f_COM;
@@ -340,8 +360,8 @@ void controllerCallback(const mjModel* m, mjData* d)
 
         //Second step
         //Pseudo inverse
-//        F_k = G.bdcSvd(ComputeThinU | ComputeThinV).solve(F_COM);
-
+        F_k = G.bdcSvd(ComputeThinU | ComputeThinV).solve(F_COM);
+//        cout << "F_k from Pseudo inverse" << endl <<F_k <<endl;
 
         //--------------------------------
 
@@ -349,34 +369,60 @@ void controllerCallback(const mjModel* m, mjData* d)
 
 
         MatrixXd Q = MatrixXd::Zero(6,6);
-        Q = 4.0f * MatrixXd::Identity(6,6);
+        Q = 100.0f * MatrixXd::Identity(6,6);
 
         MatrixXd P = MatrixXd::Zero(12,12);
-        P = (G.transpose())*Q*G;
+        P = (G.transpose())*Q*G + 1*MatrixXd::Identity(12,12);
+
         SparseMatrix<double> P_S(12,12);
         P_S = P.sparseView();
 
         VectorXd q = VectorXd::Zero(12);
         q=2*(F_COM.transpose())*Q*G;
 
-        VectorXd u = VectorXd::Zero(4);
-        Vector4d l(-1000,-1000,-1000,-1000);
-        cout << l;
+        VectorXd u = VectorXd::Zero(12);
+        u << 0, 0, 0, 10000, 0, 10000, 0, 10000, 0, 10000, 0, 0;
+        VectorXd l = VectorXd::Zero(12);
+        l << -10000,-10000, -10000, 0, -10000, 0, -10000, 0, -10000, 0, -10000, -10000;
 
-        SparseMatrix<float> A(4,12);
+//        VectorXd u = VectorXd::Zero(4);
+//        Vector4d l(-1000,-1000,-1000,-1000);
+
+        SparseMatrix<float> A(12,12);
         A.insert(0,2) = -1;
         A.insert(1,8) = -1;
+
         A.insert(2,0) = 1;
-        A.insert(2,1) = 1;
-        A.insert(2,2) = -0.1;
-        A.insert(3,6) = 1;
-        A.insert(3,7) = 1;
-        A.insert(3,8) = -0.1;
+        A.insert(2,2) = -0.07071;
+        A.insert(3,0) = 1;
+        A.insert(3,2) = 0.07071;
+        A.insert(4,1) = 1;
+        A.insert(4,2) = -0.07071;
+        A.insert(5,1) = 1;
+        A.insert(5,2) = -0.07071;
+
+        A.insert(6,5) = 1;
+        A.insert(6,7) = -0.07071;
+        A.insert(7,5) = 1;
+        A.insert(7,7) = 0.07071;
+        A.insert(8,6) = 1;
+        A.insert(8,7) = -0.07071;
+        A.insert(9,6) = 1;
+        A.insert(9,7) = -0.07071;
+
+
+
+//        A.insert(10,0) = 1;
+//        A.insert(10,1) = 1;
+//        A.insert(10,2) = -0.1;
+//        A.insert(11,6) = 1;
+//        A.insert(11,7) = 1;
+//        A.insert(11,8) = -0.1;
 
         OsqpEigen::Solver solver;
 
         solver.data()->setNumberOfVariables(12);
-        solver.data()->setNumberOfConstraints(4);
+        solver.data()->setNumberOfConstraints(12);
         solver.data()->setHessianMatrix(P_S);
         solver.data()->setGradient(q);
         solver.data()->setLinearConstraintsMatrix(A);
@@ -387,8 +433,10 @@ void controllerCallback(const mjModel* m, mjData* d)
 
         solver.solve();
 
-        F_k = solver.getSolution();
+//        F_k = -0.5*(solver.getSolution());
+//        cout << "F_k from OSQP"<<endl<< F_k << endl;
 
+//        F_K_M.block(0,steps-501,12,1) = F_k;
 
         //----------------------------
 
@@ -408,19 +456,18 @@ void controllerCallback(const mjModel* m, mjData* d)
 
         //Applying forces in x and y direction and a moment around x
 
-        cout << "###########################################################################Current Step:" << steps<< endl;
 
-        if (steps > 1500) d->qfrc_applied[1]=5000;
+//        if (steps > 1000) d->qfrc_applied[1]=15;
 
-        if (steps > 2500) d->qfrc_applied[1]=0.0;
+//        if (steps > 1500) d->qfrc_applied[1]=0.0;
 
-        if (steps > 2000) d->qfrc_applied[4]=36.0;
+//        if (steps > 1000) d->qfrc_applied[4]=45.0;
 
-        if (steps > 2200) d->qfrc_applied[4]=0.0;
+//        if (steps > 1500) d->qfrc_applied[4]=0.0;
 
-        if (steps > 2500) d->qfrc_applied[2]=193.0;
+//        if (steps > 1000) d->qfrc_applied[2]=193.0;
 
-        if (steps > 2700) d->qfrc_applied[2]=0;
+//        if (steps > 1500) d->qfrc_applied[2]=0;
 
 
     }
@@ -533,6 +580,14 @@ int main(int argc, const char** argv)
 
         // process pending GUI events, call GLFW callbacks
         glfwPollEvents();
+        if (steps>1600) //900           //uncomment so save a csv file for values until specific step
+                {
+        //            writeToCSVfile("output_F_K.csv",F_K_M);
+        //            writeToCSVfile("output_x_COM.csv",x_COM_M);
+        //            writeToCSVfile("output_x_COM_err.csv",x_COM_err_M);
+        //            writeToCSVfile("output_f_COM_mx193.csv",f_COM_M);
+        //            break;
+                }
     }
 
     //free visualization storage
