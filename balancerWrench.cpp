@@ -33,7 +33,7 @@ mjvOption opt;                      // visualization options
 mjvScene scn;                       // abstract scene
 mjrContext con;                     // custom GPU context
 
-//Eigen::MatrixXd f_COM_M = Eigen::MatrixXd::Zero(6,1600); //Matrix  (n x nb_steps) of Vector to be saved as CSV
+//Eigen::MatrixXd F_K_M = Eigen::MatrixXd::Zero(12,1600); //Matrix  (n x nb_steps) of Vector to be saved as CSV
 
 // mouse interaction
 bool button_left = false;
@@ -361,7 +361,7 @@ void controllerCallback(const mjModel* m, mjData* d)
         //Second step
         //Pseudo inverse
         F_k = G.bdcSvd(ComputeThinU | ComputeThinV).solve(F_COM);
-//        cout << "F_k from Pseudo inverse" << endl <<F_k <<endl;
+        cout << "F_k from Pseudo inverse" << endl <<F_k <<endl;
 
         //--------------------------------
 
@@ -433,8 +433,8 @@ void controllerCallback(const mjModel* m, mjData* d)
 
         solver.solve();
 
-//        F_k = -0.5*(solver.getSolution());
-//        cout << "F_k from OSQP"<<endl<< F_k << endl;
+        F_k = -0.5*(solver.getSolution());
+        cout << "F_k from OSQP"<<endl<< F_k << endl;
 
 //        F_K_M.block(0,steps-501,12,1) = F_k;
 
@@ -457,9 +457,9 @@ void controllerCallback(const mjModel* m, mjData* d)
         //Applying forces in x and y direction and a moment around x
 
 
-//        if (steps > 1000) d->qfrc_applied[1]=15;
+        if (steps > 1000) d->qfrc_applied[1]=15;
 
-//        if (steps > 1500) d->qfrc_applied[1]=0.0;
+        if (steps > 1500) d->qfrc_applied[1]=0.0;
 
 //        if (steps > 1000) d->qfrc_applied[4]=45.0;
 
@@ -582,10 +582,10 @@ int main(int argc, const char** argv)
         glfwPollEvents();
         if (steps>1600) //900           //uncomment so save a csv file for values until specific step
                 {
-        //            writeToCSVfile("output_F_K.csv",F_K_M);
+        //            writeToCSVfile("output_F_K_x15N.csv",F_K_M);
         //            writeToCSVfile("output_x_COM.csv",x_COM_M);
         //            writeToCSVfile("output_x_COM_err.csv",x_COM_err_M);
-        //            writeToCSVfile("output_f_COM_mx193.csv",f_COM_M);
+        //            writeToCSVfile("output_f_COM.csv",f_COM_M);
         //            break;
                 }
     }
