@@ -380,35 +380,46 @@ void controllerCallback(const mjModel* m, mjData* d)
         VectorXd q = VectorXd::Zero(12);
         q=2*(F_COM.transpose())*Q*G;
 
-        VectorXd u = VectorXd::Zero(12);
-        u << 0, 0, 0, 10000, 0, 10000, 0, 10000, 0, 10000, 0, 0;
-        VectorXd l = VectorXd::Zero(12);
-        l << -10000,-10000, -10000, 0, -10000, 0, -10000, 0, -10000, 0, -10000, -10000;
+//        VectorXd u = VectorXd::Zero(12);
+//        u << 0, 0, 0, 10000, 0, 10000, 0, 10000, 0, 10000, 0, 0;
+//        VectorXd l = VectorXd::Zero(12);
+//        l << -10000,-10000, -10000, 0, -10000, 0, -10000, 0, -10000, 0, -10000, -10000;
 
-//        VectorXd u = VectorXd::Zero(4);
-//        Vector4d l(-1000,-1000,-1000,-1000);
+        VectorXd u = VectorXd::Zero(4);
+        u << 0, 0, 0, 0;
 
-        SparseMatrix<float> A(12,12);
+        VectorXd l = VectorXd::Zero(4);
+        l << -10000, -10000, -10000, -10000;
+
+//        Vector4d l(-10000,-10000,-10000,-10000);
+
+        SparseMatrix<float> A(4,12);
         A.insert(0,2) = -1;
         A.insert(1,8) = -1;
 
         A.insert(2,0) = 1;
-        A.insert(2,2) = -0.07071;
-        A.insert(3,0) = 1;
-        A.insert(3,2) = 0.07071;
-        A.insert(4,1) = 1;
-        A.insert(4,2) = -0.07071;
-        A.insert(5,1) = 1;
-        A.insert(5,2) = -0.07071;
+        A.insert(2,1) = 1;
+        A.insert(2,2) = -0.1;
+        A.insert(3,6) = 1;
+        A.insert(3,7) = 1;
+        A.insert(3,8) = -0.1;
+//        A.insert(2,0) = 1;
+//        A.insert(2,2) = -0.07071;
+//        A.insert(3,0) = 1;
+//        A.insert(3,2) = 0.07071;
+//        A.insert(4,1) = 1;
+//        A.insert(4,2) = -0.07071;
+//        A.insert(5,1) = 1;
+//        A.insert(5,2) = -0.07071;
 
-        A.insert(6,5) = 1;
-        A.insert(6,7) = -0.07071;
-        A.insert(7,5) = 1;
-        A.insert(7,7) = 0.07071;
-        A.insert(8,6) = 1;
-        A.insert(8,7) = -0.07071;
-        A.insert(9,6) = 1;
-        A.insert(9,7) = -0.07071;
+//        A.insert(6,5) = 1;
+//        A.insert(6,7) = -0.07071;
+//        A.insert(7,5) = 1;
+//        A.insert(7,7) = 0.07071;
+//        A.insert(8,6) = 1;
+//        A.insert(8,7) = -0.07071;
+//        A.insert(9,6) = 1;
+//        A.insert(9,7) = -0.07071;
 
 
 
@@ -422,7 +433,7 @@ void controllerCallback(const mjModel* m, mjData* d)
         OsqpEigen::Solver solver;
 
         solver.data()->setNumberOfVariables(12);
-        solver.data()->setNumberOfConstraints(12);
+        solver.data()->setNumberOfConstraints(4);
         solver.data()->setHessianMatrix(P_S);
         solver.data()->setGradient(q);
         solver.data()->setLinearConstraintsMatrix(A);
@@ -457,9 +468,9 @@ void controllerCallback(const mjModel* m, mjData* d)
         //Applying forces in x and y direction and a moment around x
 
 
-        if (steps > 1000) d->qfrc_applied[1]=15;
+//        if (steps > 1000) d->qfrc_applied[1]=10;
 
-        if (steps > 1500) d->qfrc_applied[1]=0.0;
+//        if (steps > 1500) d->qfrc_applied[1]=0.0;
 
 //        if (steps > 1000) d->qfrc_applied[4]=45.0;
 
