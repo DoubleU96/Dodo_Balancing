@@ -369,16 +369,16 @@ void controllerCallback(const mjModel* m, mjData* d)
 
 
         MatrixXd Q = MatrixXd::Zero(6,6);
-        Q = 100.0f * MatrixXd::Identity(6,6);
+        Q = 50.0f * MatrixXd::Identity(6,6);
 
         MatrixXd P = MatrixXd::Zero(12,12);
-        P = (G.transpose())*Q*G + 1*MatrixXd::Identity(12,12);
+        P = (G.transpose())*Q*G + 100*MatrixXd::Identity(12,12);
 
         SparseMatrix<double> P_S(12,12);
         P_S = P.sparseView();
 
         VectorXd q = VectorXd::Zero(12);
-        q=2*(F_COM.transpose())*Q*G;
+        q=(F_COM.transpose())*Q*G;
 
 //        VectorXd u = VectorXd::Zero(12);
 //        u << 0, 0, 0, 10000, 0, 10000, 0, 10000, 0, 10000, 0, 0;
@@ -403,6 +403,7 @@ void controllerCallback(const mjModel* m, mjData* d)
         A.insert(3,6) = 1;
         A.insert(3,7) = 1;
         A.insert(3,8) = -0.1;
+
 //        A.insert(2,0) = 1;
 //        A.insert(2,2) = -0.07071;
 //        A.insert(3,0) = 1;
@@ -444,7 +445,7 @@ void controllerCallback(const mjModel* m, mjData* d)
 
         solver.solve();
 
-        F_k = -0.5*(solver.getSolution());
+        F_k = -(solver.getSolution()); //*0.5
         cout << "F_k from OSQP"<<endl<< F_k << endl;
 
 //        F_K_M.block(0,steps-501,12,1) = F_k;
@@ -468,11 +469,11 @@ void controllerCallback(const mjModel* m, mjData* d)
         //Applying forces in x and y direction and a moment around x
 
 
-//        if (steps > 1000) d->qfrc_applied[1]=10;
+//        if (steps > 1000) d->qfrc_applied[1]=15;
 
 //        if (steps > 1500) d->qfrc_applied[1]=0.0;
 
-//        if (steps > 1000) d->qfrc_applied[4]=45.0;
+//        if (steps > 1000) d->qfrc_applied[4]=35.0;
 
 //        if (steps > 1500) d->qfrc_applied[4]=0.0;
 
